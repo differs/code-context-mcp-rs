@@ -53,6 +53,7 @@ struct CreateCollectionResponse {
     code: i32,
     #[serde(default)]
     message: Option<String>,
+    #[allow(dead_code)] // Reserved for future debugging/monitoring
     data: serde_json::Value,
 }
 
@@ -62,6 +63,7 @@ struct SearchResponse {
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)] // Reserved for future performance monitoring
     cost: Option<i32>,
     data: Vec<SearchResultData>,
 }
