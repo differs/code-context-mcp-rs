@@ -53,8 +53,14 @@ struct CreateCollectionResponse {
     code: i32,
     #[serde(default)]
     message: Option<String>,
-    #[allow(dead_code)] // Reserved for future debugging/monitoring
-    data: serde_json::Value,
+    #[serde(default)]
+    data: CreateCollectionData,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CreateCollectionData {
+    #[serde(default)]
+    collection_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,7 +69,6 @@ struct SearchResponse {
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)] // Reserved for future performance monitoring
     cost: Option<i32>,
     data: Vec<SearchResultData>,
 }
@@ -127,6 +132,13 @@ impl VectorDatabase for MilvusVectorDatabase {
 
         if response_body.code != 0 {
             anyhow::bail!("Milvus create collection error: {}", response_body.message.unwrap_or_default());
+        }
+
+        // Log collection creation details
+        if let Some(collection_name) = &response_body.data.collection_name {
+            tracing::debug!("Created collection: {}", collection_name);
+        } else {
+            tracing::debug!("Created collection: {}", name);
         }
 
         Ok(())
@@ -196,6 +208,22 @@ impl VectorDatabase for MilvusVectorDatabase {
         // Check for Milvus API error
         if search_response.code != 0 {
             anyhow::bail!("Milvus search error: {}", search_response.message.unwrap_or_default());
+        }
+
+        // Performance monitoring: log search cost
+        let cost_ms = search_response.cost.unwrap_or(0);
+        let result_count = search_response.data.len();
+        
+        if cost_ms > 100 {
+            tracing::warn!(
+                "Slow search detected: {}ms, collection={}, results={}",
+                cost_ms, collection, result_count
+            );
+        } else {
+            tracing::debug!(
+                "Search completed: {}ms, collection={}, results={}",
+                cost_ms, collection, result_count
+            );
         }
 
         let results: Vec<SearchResult> = search_response
