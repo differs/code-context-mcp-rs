@@ -60,9 +60,14 @@ async fn main() -> Result<()> {
     load_env_files();
 
     // Initialize logging - send logs to stderr to avoid interfering with MCP protocol
+    // Default to "error" level to minimize output in TUI environments
+    // Users can override with RUST_LOG environment variable (e.g., RUST_LOG=debug)
+    let env_filter = EnvFilter::try_from_env("RUST_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("error"));
+
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(std::io::stderr))
-        .with(EnvFilter::from_default_env())
+        .with(env_filter)
         .init();
 
     tracing::info!("Starting Code Context MCP server...");
