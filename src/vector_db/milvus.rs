@@ -12,46 +12,68 @@ pub struct MilvusVectorDatabase {
 
 #[derive(Debug, Serialize)]
 struct CreateCollectionRequest {
+    #[serde(rename = "collectionName")]
     collection_name: String,
     dimension: usize,
+    #[serde(rename = "metricType")]
     metric_type: String,
 }
 
 #[derive(Debug, Serialize)]
 struct InsertRequest {
+    #[serde(rename = "collectionName")]
     collection_name: String,
     data: Vec<InsertData>,
 }
 
 #[derive(Debug, Serialize)]
 struct InsertData {
+    #[serde(rename = "id")]
+    id: i64,
+    #[serde(rename = "vector")]
     vector: Vec<f32>,
+    #[serde(rename = "metadata")]
     metadata: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
 struct SearchRequest {
+    #[serde(rename = "collectionName")]
     collection_name: String,
     data: Vec<Vec<f32>>,
     limit: usize,
+    #[serde(rename = "outputFields")]
     output_fields: Vec<String>,
+    #[serde(rename = "metricType")]
     metric_type: String,
 }
 
 #[derive(Debug, Deserialize)]
+struct CreateCollectionResponse {
+    code: i32,
+    #[serde(default)]
+    message: Option<String>,
+    data: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
 struct SearchResponse {
+    code: i32,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    cost: Option<i32>,
     data: Vec<SearchResultData>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SearchResultData {
+    #[serde(rename = "distance", alias = "score")]
     score: f32,
-    entity: Entity,
-}
-
-#[derive(Debug, Deserialize)]
-struct Entity {
-    metadata: serde_json::Value,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl MilvusVectorDatabase {
@@ -63,7 +85,7 @@ impl MilvusVectorDatabase {
     }
 
     fn collection_url(&self) -> String {
-        format!("{}/v2/vectordb/collections", self.address)
+        format!("{}/v2/vectordb/collections/create", self.address)
     }
 
     fn insert_url(&self) -> String {
@@ -96,10 +118,13 @@ impl VectorDatabase for MilvusVectorDatabase {
             .await
             .context("Failed to send create collection request")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Milvus API error ({}): {}", status, body);
+        let response_body: CreateCollectionResponse = response
+            .json()
+            .await
+            .context("Failed to parse create collection response")?;
+
+        if response_body.code != 0 {
+            anyhow::bail!("Milvus create collection error: {}", response_body.message.unwrap_or_default());
         }
 
         Ok(())
@@ -113,7 +138,9 @@ impl VectorDatabase for MilvusVectorDatabase {
         let data: Vec<InsertData> = vectors
             .iter()
             .zip(metadata.iter())
-            .map(|(vector, meta)| InsertData {
+            .enumerate()
+            .map(|(i, (vector, meta))| InsertData {
+                id: i as i64,
                 vector: vector.clone(),
                 metadata: meta.clone(),
             })
@@ -158,23 +185,28 @@ impl VectorDatabase for MilvusVectorDatabase {
             .await
             .context("Failed to send search request")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Milvus API error ({}): {}", status, body);
-        }
+        let response_text = response.text().await.context("Failed to read search response")?;
+        tracing::debug!("Milvus search raw response: {}", response_text);
 
-        let search_response: SearchResponse = response
-            .json()
-            .await
-            .context("Failed to parse search response")?;
+        let search_response: SearchResponse = serde_json::from_str(&response_text)
+            .with_context(|| format!("Failed to parse search response: {}", response_text))?;
+
+        // Check for Milvus API error
+        if search_response.code != 0 {
+            anyhow::bail!("Milvus search error: {}", search_response.message.unwrap_or_default());
+        }
 
         let results: Vec<SearchResult> = search_response
             .data
             .into_iter()
-            .map(|r| SearchResult {
-                score: r.score,
-                metadata: r.entity.metadata,
+            .filter_map(|r| {
+                // Metadata is directly in the result, or in extra fields
+                let metadata = r.metadata.unwrap_or_else(|| serde_json::Value::Object(r.extra));
+                
+                Some(SearchResult {
+                    score: r.score,
+                    metadata,
+                })
             })
             .collect();
 
@@ -183,7 +215,7 @@ impl VectorDatabase for MilvusVectorDatabase {
 
     async fn drop_collection(&self, name: &str) -> Result<()> {
         let request = json!({
-            "collection_name": name
+            "collectionName": name
         });
 
         let response = self

@@ -3,7 +3,7 @@ use super::types::*;
 use crate::embedding::ollama::OllamaEmbedding;
 use crate::embedding::EmbeddingProvider;
 use crate::handlers::tool_handlers::ToolHandlers;
-use crate::snapshot::SnapshotManager;
+use crate::snapshot::{SnapshotManager, DEFAULT_MAX_PROJECTS};
 use crate::vector_db::milvus::MilvusVectorDatabase;
 use crate::vector_db::VectorDatabase;
 use anyhow::Result;
@@ -19,9 +19,9 @@ const SERVER_VERSION: &str = "0.1.0";
 /// Main MCP Server
 pub struct McpServer {
     protocol: Protocol,
-    #[allow(dead_code)] // Passed to tool_handlers, retained for potential future direct use
+    #[allow(dead_code)] // Used internally by tool_handlers via Arc
     embedding: Arc<dyn EmbeddingProvider>,
-    #[allow(dead_code)] // Passed to tool_handlers, retained for potential future direct use
+    #[allow(dead_code)] // Used internally by tool_handlers via Arc
     vector_db: Arc<dyn VectorDatabase>,
     snapshot_manager: Arc<SnapshotManager>,
     tool_handlers: Arc<Mutex<ToolHandlers>>,
@@ -33,6 +33,12 @@ impl McpServer {
         let ollama_host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
         let embedding_model = std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
         let milvus_address = std::env::var("MILVUS_ADDRESS").unwrap_or_else(|_| "http://127.0.0.1:19530".to_string());
+        
+        // Maximum number of indexed projects (LRU eviction when exceeded)
+        let max_projects = std::env::var("MAX_INDEXED_PROJECTS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_MAX_PROJECTS);
 
         // Initialize embedding provider
         let embedding = Arc::new(OllamaEmbedding::new(&ollama_host, &embedding_model));
@@ -40,7 +46,7 @@ impl McpServer {
         // Initialize vector database
         let vector_db = Arc::new(MilvusVectorDatabase::new(&milvus_address));
 
-        // Initialize snapshot manager
+        // Initialize snapshot manager with max projects limit
         let snapshot_path = std::env::var("SNAPSHOT_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -48,13 +54,14 @@ impl McpServer {
                 PathBuf::from(home).join(".code-context/snapshot.json")
             });
 
-        let snapshot_manager = Arc::new(SnapshotManager::new(snapshot_path)?);
+        let snapshot_manager = Arc::new(SnapshotManager::new_with_max_projects(snapshot_path, max_projects)?);
 
         // Initialize tool handlers
         let tool_handlers = Arc::new(Mutex::new(ToolHandlers::new(
             embedding.clone(),
             vector_db.clone(),
             snapshot_manager.clone(),
+            max_projects,
         )));
 
         Ok(Self {
@@ -139,8 +146,16 @@ impl McpServer {
             }
         };
 
-        // Store client info for future use (roots capability, etc.)
-        let _ = client_info;
+        // Check if client supports roots capability
+        let supports_roots = client_info
+            .capabilities
+            .roots
+            .map(|r| r.listChanged)
+            .unwrap_or(false);
+
+        if supports_roots {
+            tracing::info!("Client supports roots capability");
+        }
 
         let response = InitializeResponse {
             protocolVersion: PROTOCOL_VERSION.to_string(),
@@ -170,7 +185,11 @@ impl McpServer {
 
 ✨ **Usage Guidance**:
 - This tool is typically used when search fails due to an unindexed codebase.
-- If indexing is attempted on an already indexed path, you MUST prompt the user to confirm whether to proceed with a force index."#.to_string(),
+- If indexing is attempted on an already indexed path, you MUST prompt the user to confirm whether to proceed with a force index.
+
+📁 **Multi-Project Support**:
+- Each project is indexed independently with its own collection.
+- You can index multiple projects simultaneously."#.to_string(),
                 inputSchema: json!({
                     "type": "object",
                     "properties": {
@@ -199,13 +218,17 @@ impl McpServer {
 
 ⚠️ **IMPORTANT**:
 - You MUST provide an absolute path.
-- If the codebase is not indexed, this tool will return an error."#.to_string(),
+- If the codebase is not indexed, this tool will return an error.
+
+✨ **Multi-Project Support**:
+- Set `cross_project: true` to search across all indexed projects.
+- Or use path "all" to search all projects."#.to_string(),
                 inputSchema: json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "ABSOLUTE path to the codebase directory to search in."
+                            "description": "ABSOLUTE path to the codebase directory to search in. Use 'all' to search all projects."
                         },
                         "query": {
                             "type": "string",
@@ -216,6 +239,11 @@ impl McpServer {
                             "description": "Maximum number of results to return",
                             "default": 10,
                             "maximum": 50
+                        },
+                        "cross_project": {
+                            "type": "boolean",
+                            "description": "Search across all indexed projects",
+                            "default": false
                         }
                     },
                     "required": ["path", "query"]
@@ -223,13 +251,16 @@ impl McpServer {
             },
             Tool {
                 name: "clear_index".to_string(),
-                description: "Clear the search index for a codebase.".to_string(),
+                description: r#"Clear the search index for a codebase.
+
+📁 **Multi-Project Support**:
+- Use path "all" to clear all indexed projects at once."#.to_string(),
                 inputSchema: json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "ABSOLUTE path to the codebase directory to clear."
+                            "description": "ABSOLUTE path to the codebase directory to clear. Use 'all' to clear all projects."
                         }
                     },
                     "required": ["path"]
@@ -237,13 +268,16 @@ impl McpServer {
             },
             Tool {
                 name: "get_indexing_status".to_string(),
-                description: "Get the current indexing status of a codebase.".to_string(),
+                description: r#"Get the current indexing status of a codebase.
+
+📁 **Multi-Project Support**:
+- Use path "all" to see status of all indexed projects."#.to_string(),
                 inputSchema: json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "ABSOLUTE path to the codebase directory."
+                            "description": "ABSOLUTE path to the codebase directory. Use 'all' to see all projects."
                         }
                     },
                     "required": ["path"]

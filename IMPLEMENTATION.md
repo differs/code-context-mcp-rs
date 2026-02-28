@@ -251,6 +251,7 @@ Collection: code_index_a1b2c3d4
 | `EMBEDDING_MODEL` | 否 | `nomic-embed-text` | Embedding 模型名 |
 | `MILVUS_ADDRESS` | 否 | `http://127.0.0.1:19530` | Milvus 地址 |
 | `SNAPSHOT_PATH` | 否 | `~/.code-context/snapshot.json` | 快照存储路径 |
+| `MAX_INDEXED_PROJECTS` | 否 | `10` | 最大索引项目数（超限时 LRU 自动驱逐） |
 | `RUST_LOG` | 否 | - | 日志级别 (info/debug/error) |
 
 ### OpenCode 配置

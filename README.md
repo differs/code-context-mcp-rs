@@ -96,6 +96,7 @@ Edit `.env`:
 OLLAMA_HOST=http://127.0.0.1:11434
 EMBEDDING_MODEL=nomic-embed-text
 MILVUS_ADDRESS=http://127.0.0.1:19530
+MAX_INDEXED_PROJECTS=10
 RUST_LOG=info
 ```
 
@@ -107,6 +108,7 @@ RUST_LOG=info
 | `EMBEDDING_MODEL` | No | `nomic-embed-text` | Embedding model name |
 | `MILVUS_ADDRESS` | No | `http://127.0.0.1:19530` | Milvus vector database address |
 | `SNAPSHOT_PATH` | No | `~/.code-context/snapshot.json` | Snapshot storage path |
+| `MAX_INDEXED_PROJECTS` | No | `10` | Max indexed projects (LRU eviction) |
 | `RUST_LOG` | No | - | Log level (info/debug/error) |
 
 ## Usage with MCP Clients
@@ -185,6 +187,8 @@ env = { OLLAMA_HOST = "http://127.0.0.1:11434", MILVUS_ADDRESS = "http://127.0.0
 
 Index a codebase directory for semantic search.
 
+**Multi-Project Support**: Each project is indexed independently. When `MAX_INDEXED_PROJECTS` is exceeded, the oldest project is automatically evicted (LRU).
+
 ```json
 {
   "name": "index_codebase",
@@ -199,20 +203,23 @@ Index a codebase directory for semantic search.
 
 Search the indexed codebase.
 
+**Cross-Project Search**: Set `cross_project: true` or use `path: "all"` to search across all indexed projects.
+
 ```json
 {
   "name": "search_code",
   "arguments": {
     "path": "/absolute/path/to/codebase",
     "query": "find functions that handle authentication",
-    "limit": 10
+    "limit": 10,
+    "cross_project": false
   }
 }
 ```
 
 ### `clear_index`
 
-Clear the search index.
+Clear the search index. Use `path: "all"` to clear all indexed projects.
 
 ```json
 {
@@ -225,7 +232,7 @@ Clear the search index.
 
 ### `get_indexing_status`
 
-Get indexing status.
+Get indexing status. Use `path: "all"` to see all indexed projects.
 
 ```json
 {
